@@ -1,0 +1,14 @@
+Monday 4th June 2018
+
+Working on on_the_fly.py
+
+Some todos:
+
+1. Give all words in the dictionary a number based on how many times its been seen/updated
+2. Create a list of all phrases including a word, so that when its dictionary bits change, they can all be updated
+3. When updating or creating a new word take into acount the dict strength of the words in each phrase
+
+Checking in with:
+
+Adding words works but no continuous updates.
+

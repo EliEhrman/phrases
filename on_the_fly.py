@@ -11,20 +11,23 @@ import csv
 import random
 import sys
 import copy
+import os
 from os.path import expanduser
-# from builtins import enumerate
+from shutil import copyfile
+import itertools
 
 import numpy as np
 
 # fnt = 'orders_success.txt'
 fnt = '~/tmp/adv_phrase_freq.txt'
+fnt_dict = '~/tmp/adv_bin_dict.txt'
 
 c_bitvec_size = 11
 c_min_bits = 3
 c_max_bits = 20
 c_num_replicate_missing = 5
 c_ham_winners_fraction = 32
-c_num_iters = 300000
+c_num_iters = 10000 # 300000
 c_num_skip_phrases_fraction = 0.1
 c_num_dbs = 7
 c_num_sel_mats = 9
@@ -39,11 +42,12 @@ c_num_change_muts = 3
 c_change_mut_prob_change_len = 0.3 # 0.3
 c_change_mut_num_change = 1
 c_init_len = 800
-
 c_move_rnd = 0.5
 c_move_rnd_change = 0.02
 c_min_frctn_change  = 0.001
 c_max_frctn_change  = 0.01
+c_b_init_db = False
+c_save_init_db_every = 100
 
 def create_word_dict(phrase_list, max_process):
 	d_els = dict()
@@ -58,6 +62,42 @@ def create_word_dict(phrase_list, max_process):
 
 	return d_els
 
+def save_word_db(d_words, nd_bit_db):
+	fn = expanduser(fnt_dict)
+
+	if os.path.isfile(fn):
+		copyfile(fn, fn + '.bak')
+	fh = open(fn, 'wb')
+	csvw = csv.writer(fh, delimiter='\t', quoting=csv.QUOTE_NONE, escapechar='\\')
+	csvw.writerow(['Adv Dict', 'Version', '1'])
+	csvw.writerow(['Num Els:', len(d_words)])
+	for kword, virow in d_words.iteritems():
+		csvw.writerow([kword, virow] + nd_bit_db[virow].tolist())
+
+	fh.close()
+
+def load_word_db():
+	fn = expanduser(fnt_dict)
+	try:
+		with open(fn, 'rb') as o_fhr:
+			csvr = csv.reader(o_fhr, delimiter='\t', quoting=csv.QUOTE_NONE, escapechar='\\')
+			_, _, version_str = next(csvr)
+			_, snum_els = next(csvr)
+			version, num_els = int(version_str), int(snum_els)
+			if version != 1:
+				raise IOError
+			d_words, s_word_bit_db, nd_bit_db = dict(), set(), np.zeros((num_els, c_bitvec_size), dtype=np.uint8)
+			for irow, row in enumerate(csvr):
+				word, iel, sbits = row[0], row[1], row[2:]
+				d_words[word] = int(iel)
+				bits = map(int, sbits)
+				nd_bit_db[int(iel)] = np.array(bits, dtype=np.uint8)
+				s_word_bit_db.add(tuple(bits))
+
+	except IOError:
+		raise ValueError('Cannot open or read ', fn)
+
+	return d_words, nd_bit_db, s_word_bit_db
 
 def load_order_freq_tbl(fnt):
 	fn = expanduser(fnt)
@@ -87,16 +127,19 @@ def load_order_freq_tbl(fnt):
 	# num_uniques = len(d_words)
 
 	# return freq_tbl, num_uniques, d_words, s_phrase_lens
-	random.shuffle(freq_tbl)
+	# random.shuffle(freq_tbl)
 	return freq_tbl, s_phrase_lens
 
 
-def create_input_bits(nd_bit_db, d_words, phrase):
+def create_input_bits(nd_bit_db, d_words, phrase, l_b_known=[]):
 	phrase_len = len(phrase)
 	input_bits = np.zeros(phrase_len * c_bitvec_size, dtype=np.uint8)
 	loc = 0
-	for word in phrase:
-		input_bits[loc:loc + c_bitvec_size] = nd_bit_db[d_words[word]]
+	for iword, word in enumerate(phrase):
+		if l_b_known != [] and not l_b_known[iword]:
+			input_bits[loc:loc + c_bitvec_size] = np.zeros(c_bitvec_size, dtype=np.uint8)
+		else:
+			input_bits[loc:loc + c_bitvec_size] = nd_bit_db[d_words[word]]
 		loc += c_bitvec_size
 	# missing_loc = phrase[1] * c_num_replicate_missing
 	# input_bits[loc + missing_loc:loc + missing_loc + c_num_replicate_missing] = [1] * c_num_replicate_missing
@@ -152,13 +195,11 @@ def score_hd_output_bits(nd_phrase_bits_db, qbits, mbits, iskip, iword, change_d
 score_hd_output_bits.num_ham_winners = 0
 
 
-def score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, l_change_db):
+def score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, s_word_bit_db):
 	num_uniques = len(d_words)
 	l_change_db = [[[0.0 for ibit in xrange(c_bitvec_size)], 0.0] for _ in xrange(num_uniques)]
-	num_ham_winners = len(d_words) / c_ham_winners_fraction
-	score_hd_output_bits.num_ham_winners= num_ham_winners
 	bitvec_size = nd_bit_db.shape[1]
-	num_phrases = 0
+	num_scored = 0
 	num_hits = 0
 	l_l_mbits = [] # mask bits
 	for ilen, phrase_len in enumerate(s_phrase_lens):
@@ -173,7 +214,7 @@ def score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, l_change_d
 					  for ilen, l_len_phrases in enumerate(l_phrases)]
 	score = 0.0
 	for ilen, phrase_len in enumerate(s_phrase_lens):
-		num_phrases += len(l_phrases[ilen])
+		num_scored += len(l_phrases[ilen]) * phrase_len
 		# sel_mat = d_phrase_sel_mats[phrase_len]
 		for iphrase, phrase in enumerate(l_phrases[ilen]):
 			# nd_bits = np.zeros(c_bitvec_size, dtype=np.int)
@@ -185,21 +226,32 @@ def score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, l_change_d
 				score += score_hd_output_bits(	phrase_bits_db[ilen], phrase_bits_db[ilen][iphrase],
 												l_l_mbits[ilen][iskip], iskip, d_words[phrase[iskip]],
 												l_change_db)
+	score /= num_scored
 
 	num_changed = 0
-	for iuniqe, bits_data in enumerate(l_change_db):
+	for iunique, bits_data in enumerate(l_change_db):
 		l_bits_avg, _ = bits_data
-		l_bits_now = nd_bit_db[iuniqe]
+		l_bits_now = nd_bit_db[iunique]
 		if random.random() < score_and_change_db.move_rnd:
+			bchanged = False
 			ibit = random.randint(0, c_bitvec_size-1)
 			bit_now, bit_goal = l_bits_now[ibit], l_bits_avg[ibit]
+			proposal = np.copy(nd_bit_db[iunique])
 			if bit_now == 0 and bit_goal > 0.5:
 				if random.random() < (bit_goal - 0.5):
-					nd_bit_db[iuniqe][ibit] = 1
-					num_changed += 1
+					proposal[ibit] = 1
+					bchanged = True
 			elif bit_now == 1 and bit_goal < 0.5:
 				if random.random() < (0.5 - bit_goal):
-					nd_bit_db[iuniqe][ibit] = 0
+					proposal[ibit] = 0
+					bchanged = True
+			if bchanged:
+				tproposal = tuple(proposal.tolist())
+				if tproposal not in s_word_bit_db:
+					tremove = tuple(nd_bit_db[iunique].tolist())
+					nd_bit_db[iunique, :] = proposal
+					s_word_bit_db.remove(tremove)
+					s_word_bit_db.add(tproposal)
 					num_changed += 1
 	frctn_change = float(num_changed) / float(num_uniques * c_bitvec_size)
 	if frctn_change < c_min_frctn_change:
@@ -306,13 +358,110 @@ score_and_change_db.move_rnd = c_move_rnd
 # 					if random.random() < 0.5:
 # 						sel_mat[allele] = list(partner_sel_mat[allele])
 
+def build_phrase_bin_db(s_phrase_lens, l_phrases, nd_el_bin_db, d_words):
+	phrase_bits_db = [np.zeros((len(l_len_phrases), c_bitvec_size * list(s_phrase_lens)[ilen]), dtype=np.int)
+					  for ilen, l_len_phrases in enumerate(l_phrases)]
+	score = 0.0
+	for ilen, phrase_len in enumerate(s_phrase_lens):
+		for iphrase, phrase in enumerate(l_phrases[ilen]):
+			# nd_bits = np.zeros(c_bitvec_size, dtype=np.int)
+			input_bits = create_input_bits(nd_el_bin_db, d_words, phrase)
+			phrase_bits_db[ilen][iphrase, :] = input_bits
+
+	return phrase_bits_db
+
+
+def add_new_words(nd_bit_db, d_words, nd_phrase_bits_db, phrase, phrase_bits, s_word_bit_db, l_b_known):
+	divider = np.array(range(5, score_hd_output_bits.num_ham_winners + 5), np.float32)
+	divider_sum = np.sum(1. / divider)
+	phrase_len = len(l_b_known)
+	mbits = np.ones(phrase_len * c_bitvec_size, np.uint8)
+	for iword, bknown in enumerate(l_b_known):
+		if not bknown:
+			mbits[iword * c_bitvec_size:(iword + 1) * c_bitvec_size] = np.zeros(c_bitvec_size, np.uint8)
+
+	nd_diffs = np.logical_and(np.not_equal(phrase_bits, nd_phrase_bits_db), mbits)
+	nd_diffs = np.where(nd_diffs, np.ones_like(nd_phrase_bits_db), np.zeros_like(nd_phrase_bits_db))
+	hd = np.sum(nd_diffs, axis=1)
+	hd_winners = np.argpartition(hd, score_hd_output_bits.num_ham_winners)[:score_hd_output_bits.num_ham_winners]
+	hd_of_winners = hd[hd_winners]
+	iwinners = np.argsort(hd_of_winners)
+	hd_idx_sorted = hd_winners[iwinners]
+	winner_outputs = nd_phrase_bits_db[hd_idx_sorted]
+	for iword, bknown in enumerate(l_b_known):
+		if not bknown:
+			obits = winner_outputs[:, iword*c_bitvec_size:(iword+1)*c_bitvec_size]
+			new_vals = np.sum(obits.transpose() / divider, axis=1) / divider_sum
+			# round them all and if the pattern is already there switch the closest to 0.5
+			new_bits = np.round_(new_vals).astype(np.uint8)
+			if tuple(new_bits) in s_word_bit_db:
+				bfound = False
+				while True:
+					can_flip = np.argsort(np.square(new_vals - 0.5))
+					for num_flip in range(1, c_bitvec_size):
+						try_flip = can_flip[:num_flip]
+						l = [list(itertools.combinations(try_flip, r)) for r in range(num_flip+1)]
+						lp = [item for sublist in l for item in sublist]
+						for p in lp:
+							pbits = list(new_bits)
+							for itf in try_flip:
+								pbits[itf] = 1 if itf in p else 0
+							if tuple(pbits) not in s_word_bit_db:
+								new_bits = pbits
+								bfound = True
+								break
+						if bfound:
+							break
+					if bfound:
+						break
+
+
+			s_word_bit_db.add(tuple(new_bits))
+			nd_bit_db = np.concatenate((nd_bit_db, np.expand_dims(new_bits, axis=0)), axis=0)
+			d_words[phrase[iword]] = len(d_words)
+	return nd_bit_db
+
+
+def keep_going(freq_tbl, d_words, nd_bit_db, s_word_bit_db, s_phrase_lens, l_phrases):
+	phrase_bin_db = build_phrase_bin_db(s_phrase_lens, l_phrases, nd_bit_db, d_words)
+
+	for phrase in freq_tbl[c_init_len:]:
+		for iel, el, in enumerate(phrase):
+			phrase_len = len(phrase)
+			if phrase_len not in s_phrase_lens:
+				raise ValueError('New phrase len. Not coded this possibility yet')
+			ilen = list(s_phrase_lens).index(phrase_len)
+			l_b_known = [True for _ in phrase]
+			for iword, word in enumerate(phrase):
+				id = d_words.get(word, -1)
+				if id == -1:
+					l_b_known[iword] = False
+			if not all(l_b_known):
+				phrase_bits = create_input_bits(nd_bit_db, d_words, phrase, l_b_known=l_b_known)
+				nd_bit_db = add_new_words(nd_bit_db, d_words, phrase_bin_db[ilen], phrase, phrase_bits, s_word_bit_db, l_b_known)
+
+	return nd_bit_db
+
+
 def main():
 	# success_orders_freq = dict()
 	freq_tbl, s_phrase_lens = load_order_freq_tbl(fnt)
 	init_len = c_init_len # len(freq_tbl) / 2
 	d_words = create_word_dict(freq_tbl, init_len)
+	num_ham_winners = len(d_words) / c_ham_winners_fraction
+	score_hd_output_bits.num_ham_winners= num_ham_winners
 	num_uniques = len(d_words)
-	nd_bit_db = np.random.choice(a=[0, 1], size=(num_uniques, c_bitvec_size))
+	nd_bit_db = np.zeros((num_uniques, c_bitvec_size), dtype=np.uint8)
+	s_word_bit_db = set()
+	for iunique in range(num_uniques):
+		while True:
+			proposal = np.random.choice(a=[0, 1], size=(c_bitvec_size))
+			tproposal = tuple(proposal.tolist())
+			if tproposal in s_word_bit_db:
+				continue
+			nd_bit_db[iunique, :] = proposal
+			s_word_bit_db.add(tproposal)
+			break
 	l_change_db = [[[0.0 for ibit in xrange(c_bitvec_size)], 0.0] for _ in xrange(num_uniques)]
 	# d_phrase_sel_mats, d_lens = dict(), dict()
 	# for ilen, phrase_len in enumerate(s_phrase_lens):
@@ -336,25 +485,17 @@ def main():
 		l_phrases[d_lens[plen]].append(phrase)
 
 
-	# l_d_phrase_sel_mats = [copy.deepcopy(d_phrase_sel_mats) for isel in range(c_num_sel_mats)]
-	# l_record_sel_mat_scores = [-1.0]
-	# l_record_sel_mats = [d_phrase_sel_mats]
-	# l_record_db_scores = []
-	# l_record_dbs = []
+	if c_b_init_db:
+		for iiter in range(c_num_iters):
+			score = score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, s_word_bit_db)
+			print('iiter', iiter, 'score:', score)  # , 'list', l_scores)
+			if iiter % c_save_init_db_every == 0:
+				save_word_db(d_words, nd_bit_db)
+	else:
+		d_words, nd_bit_db, s_word_bit_db = load_word_db()
 
-	for iiter in range(c_num_iters):
-		score = score_and_change_db(s_phrase_lens, d_words, l_phrases, nd_bit_db, l_change_db)
-		print('iiter', iiter, 'score:', score)  # , 'list', l_scores)
-	# select_best(l_objs, iiter, l_record_scores, l_record_objs, best_other, b_do_dbs)
-		# if iiter % 1 == 0:
-		# 	# if iiter == 0:
-		# 	select_best(s_phrase_lens, d_words, l_phrases, l_dbs, iiter,
-		# 				l_record_db_scores, l_record_dbs, l_record_sel_mats[0], b_do_dbs=True)
-		# 	mutate_dbs(l_dbs, num_uniques)
-		# # else:
-		# # 	select_best(s_phrase_lens, d_words, l_skip_phrases, l_d_phrase_sel_mats, iiter,
-		# # 				l_record_sel_mat_scores, l_record_sel_mats, l_record_dbs[0], b_do_dbs=False)
-		# # 	mutate_sel_mats(l_d_phrase_sel_mats, s_phrase_lens)
+	nd_bit_db = keep_going(freq_tbl, d_words, nd_bit_db, s_word_bit_db, s_phrase_lens, l_phrases)
+	pass
 
 main()
 print('done')
