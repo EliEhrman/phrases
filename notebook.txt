@@ -12,3 +12,16 @@ Checking in with:
 
 Adding words works but no continuous updates.
 
+More todos:
+
+4. Every new phrase with no new words can update all the words in its phrase
+5. Keep a running list of potential changes
+    One per word
+    Run it every time the number of occurences doubles, so its getting exponentially slower
+
+1, 2, 4, and 5 done. 3 is not but helped somewhat by 5, Consider doing 3
+
+Checking in with:
+
+on_the_fly works.
+
