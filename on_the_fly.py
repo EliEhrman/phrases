@@ -22,7 +22,7 @@ import numpy as np
 fnt = '~/tmp/adv_phrase_freq.txt'
 fnt_dict = '~/tmp/adv_bin_dict.txt'
 
-c_bitvec_size = 11
+c_bitvec_size = 16
 c_min_bits = 3
 c_max_bits = 20
 c_num_replicate_missing = 5
@@ -41,12 +41,12 @@ c_num_incr_muts = 2
 c_num_change_muts = 3
 c_change_mut_prob_change_len = 0.3 # 0.3
 c_change_mut_num_change = 1
-c_init_len = 800
+c_init_len = 2000
 c_move_rnd = 0.5
 c_move_rnd_change = 0.02
 c_min_frctn_change  = 0.001
 c_max_frctn_change  = 0.01
-c_b_init_db = False
+c_b_init_db = True
 c_save_init_db_every = 100
 c_kmeans_divider_offset = 5
 c_add_batch = 400
@@ -227,11 +227,11 @@ def change_bit(nd_bit_db, s_word_bit_db, l_bits_now, l_bits_avg, iword):
 	bit_now, bit_goal = l_bits_now[ibit], l_bits_avg[ibit]
 	proposal = np.copy(nd_bit_db[iword])
 	if bit_now == 0 and bit_goal > 0.5:
-		if random.random() < (bit_goal - 0.5):
+		if random.random() < ((bit_goal - 0.5) * 4):
 			proposal[ibit] = 1
 			bchanged = True
 	elif bit_now == 1 and bit_goal < 0.5:
-		if random.random() < (0.5 - bit_goal):
+		if random.random() < ((0.5 - bit_goal) * 4):
 			proposal[ibit] = 0
 			bchanged = True
 	if bchanged:
@@ -582,6 +582,7 @@ def main():
 			print('iiter', iiter, 'score:', score)  # , 'list', l_scores)
 			if iiter % c_save_init_db_every == 0:
 				save_word_db(d_words, nd_bit_db)
+		return
 	else:
 		d_words, nd_bit_db, s_word_bit_db = load_word_db()
 
